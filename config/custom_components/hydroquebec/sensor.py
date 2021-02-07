@@ -1,4 +1,4 @@
-import logging 
+import logging
 import asyncio
 import json
 
@@ -7,7 +7,7 @@ from dateutil import tz, relativedelta
 
 from pyhydroquebec.error import PyHydroQuebecHTTPError
 from pyhydroquebec.client import HydroQuebecClient
-from pyhydroquebec.consts  import (
+from pyhydroquebec.consts import (
     CURRENT_MAP,
     DAILY_MAP,
 
@@ -41,7 +41,7 @@ CONF_NAME = "name"
 CONF_MONITORED_VARIABLES = "monitored_variables"
 
 KILOWATT_HOUR = ENERGY_KILO_WATT_HOUR
-SENSOR_TYPES = { **CURRENT_MAP, **DAILY_MAP }
+SENSOR_TYPES = {**CURRENT_MAP, **DAILY_MAP}
 
 PLATFORM_SCHEMA = PLATFORM_SCHEMA.extend(
     {
@@ -56,6 +56,7 @@ PLATFORM_SCHEMA = PLATFORM_SCHEMA.extend(
     extra=vol.ALLOW_EXTRA,
 )
 
+
 async def async_setup_platform(hass, config, async_add_entities, discovery_info=None):
     """Set up the HydroQuebec sensor."""
     # Create a data fetcher to support all of the configured sensors. Then make
@@ -63,22 +64,22 @@ async def async_setup_platform(hass, config, async_add_entities, discovery_info=
 
     _LOGGER.debug("Création du client")
 
-    username=config.get(CONF_USERNAME)
-    password=config.get(CONF_PASSWORD)
-    contract=config.get(CONF_CONTRACT)    
-    monitored_variables=config.get(CONF_MONITORED_VARIABLES)
+    username = config.get(CONF_USERNAME)
+    password = config.get(CONF_PASSWORD)
+    contract = config.get(CONF_CONTRACT)
+    monitored_variables = config.get(CONF_MONITORED_VARIABLES)
     time_zone = str(hass.config.time_zone)
     httpsession = async_get_clientsession(hass, False)
- 
+
     hqdata = HydroQuebecData(
-        username, password, contract, REQUESTS_TIMEOUT, httpsession #, 'DEBUG'
+        username, password, contract, time_zone, REQUESTS_TIMEOUT, httpsession  # , 'DEBUG'
     )
 
     await hqdata.async_update()
-    
+
     sensors = []
     for sensor_type in monitored_variables:
-        sensors.append(HydroQuebecSensor(hqdata, sensor_type)) 
+        sensors.append(HydroQuebecSensor(hqdata, sensor_type))
 
     async_add_entities(sensors, True)
     return True
@@ -88,7 +89,6 @@ class HydroQuebecSensor(Entity):
     """Implementation of a HydroQuebec sensor."""
 
     def __init__(self, hqdata, sensor_type):
-
         """Initialize the sensor."""
         self.type = sensor_type
         self._client_name = "hydroquebec"
@@ -109,14 +109,14 @@ class HydroQuebecSensor(Entity):
 
     @property
     def state(self):
-        """Return the state of the sensor."""        
-        if self.type[0:5] == "perio":       
-            if self.hqdata.period != {} :
+        """Return the state of the sensor."""
+        if self.type[0:5] == "perio":
+            if self.hqdata.period != {}:
                 return "{:.2f}".format(self.hqdata.period[self.type])
             else:
                 return None
         else:
-            if self.hqdata.daily != {} :
+            if self.hqdata.daily != {}:
                 return "{:.2f}".format(self.hqdata.daily[self.type])
             else:
                 return None
@@ -144,35 +144,29 @@ class HydroQuebecSensor(Entity):
         """Get the latest data from Hydroquebec and update the state."""
 
         await self.hqdata.async_update()
-                
+
         # _LOGGER.debug(self._hqdata.period)
+
 
 class HydroQuebecData:
     """Implementation of a HydroQuebec DataConnector."""
 
-    def __init__(self, username, password, contract, REQUESTS_TIMEOUT, httpsession):
-        self._contract = contract        
+    def __init__(self, username, password, contract, time_zone, REQUESTS_TIMEOUT, httpsession):
+        self._contract = contract
         self._hqclient = HydroQuebecClient(
-            username, password, REQUESTS_TIMEOUT, httpsession #, 'DEBUG'
+            username, password, REQUESTS_TIMEOUT, httpsession  # , 'DEBUG'
         )
         self._daily = {}
         self._period = {}
-
-    @property
-    def balance(self):
-        return self._balance
+        self._tz = tz.gettz(time_zone)
 
     @property
     def daily(self):
         return self._daily
-    
+
     @property
     def period(self):
         return self._period
-
-    @property
-    def customers(self):
-        return self._customers
 
     @Throttle(MIN_TIME_BETWEEN_UPDATES)
     async def async_update(self):
@@ -183,16 +177,27 @@ class HydroQuebecData:
             if customer.contract_id != self._contract and self._contract is not None:
                 continue
             if self._contract is None:
-                _LOGGER.warning("Contract id not specified, using first available.")
+                _LOGGER.warning(
+                    "Contract id not specified, using first available.")
 
-            await customer.fetch_daily_data() 
-            await customer.fetch_current_period()        
-            
-            curr = customer.current_daily_data
-            yesterday_date = list(curr.keys())[0]
-            self._daily = curr[yesterday_date]
+            try:
 
-            period = customer.current_period                                                 
-            self._period = period
-            
+                yesterday = datetime.now(self._tz) - timedelta(hours=27)
+                yesterday_str = yesterday.strftime("%Y-%m-%d")
+                _LOGGER.debug(f"Fetching: {yesterday_str}")
+
+                await customer.fetch_daily_data(yesterday_str, yesterday_str)
+                await customer.fetch_current_period()
+
+                curr = customer.current_daily_data
+                #yesterday_date = list(curr.keys())[0]
+                self._daily = curr[yesterday_str]
+
+                period = customer.current_period
+                self._period = period
+
+            except Exception as e:
+
+                _LOGGER.warning(f"Exception: {e}")
+
             return
